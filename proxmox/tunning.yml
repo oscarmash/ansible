@@ -1,0 +1,138 @@
+---
+# tasks file for tunning
+- name: Tunning Proxmox
+  hosts: proxmox
+
+  vars:
+    relayhost: "172.26.0.57"
+    alertas_email: "oscarmash@gmail.com"
+
+  tasks:
+
+  - name: apt-get update
+    apt:
+      cache_valid_time: 3600
+
+  - name: Install Postfix
+    package:
+      name: postfix
+      state: present
+
+  - name: Enable mail relaying
+    lineinfile:
+      path: /etc/postfix/main.cf
+      regexp: '^relayhost'
+      line: relayhost = {{ relayhost }}
+    notify:
+    - Restart service postfix
+
+  - name: Copy pve-enterprise.list
+    copy:
+      src: files/pve-enterprise.list
+      dest: /etc/apt/sources.list.d/pve-enterprise.list
+      owner: root
+      group: root
+      mode: 0644
+    register: resultpveenterprise
+
+  - name: Update apt cache if copy pve-enterprise.list
+    apt:
+      update_cache: yes
+    when: resultpveenterprise.changed
+
+  - name: Install fail2ban
+    package:
+      name: fail2ban
+      state: present
+
+  - name: Copy proxmox.conf in fail2ban
+    copy:
+      src: files/proxmox.conf
+      dest: /etc/fail2ban/action.d/proxmox.conf
+      owner: root
+      group: root
+      mode: 0644
+    notify:
+    - Restart service fail2ban
+
+  - name: Search proxmox in jail.conf
+    shell: grep -q "\[proxmox\]" /etc/fail2ban/jail.conf && echo true || echo false
+    register: proxmox_in_jail
+
+  - name: Insert proxmox in jail.conf
+    blockinfile:
+      dest: /etc/fail2ban/jail.conf
+      block: |
+        [proxmox]
+        enabled = true
+        port = https,http,8006
+        filter = proxmox
+        logpath = /var/log/daemon.log
+        maxretry = 3
+        bantime = 3600
+        action = proxmox
+    when: proxmox_in_jail.stdout == "false"
+    notify:
+    - Restart service fail2ban
+
+  - name: Add destemail in jail.conf
+    lineinfile:
+      path: /etc/fail2ban/jail.conf
+      regexp: '^destemail'
+      line: "destemail = {{ alertas_email }}"
+    notify:
+    - Restart service fail2ban
+
+  - name: Enable service fail2ban
+    service:
+      name: fail2ban
+      enabled: yes
+
+  - name: Search X-Forwarded-For in AnyEvent.pm
+    shell: grep -q "X-Forwarded-For" /usr/share/perl5/PVE/APIServer/AnyEvent.pm && echo true || echo false
+    register: X_Forwarded_For_in_AnyEvent
+
+  - name: Add X-Forwarded-For in AnyEvent.pm
+    blockinfile:
+      path: /usr/share/perl5/PVE/APIServer/AnyEvent.pm
+      block: |
+                            return; 
+                            };
+                            if ($r->header('X-Forwarded-For')) {
+                            $reqstate->{peer_host} = $r->header('X-Forwarded-For');
+                            }
+                            eval {
+
+      #insertbefore: 'eval\s\{\n\s*\$auth\s\=\s\$self->auth_handler'
+      insertbefore: 'self->auth_handler'
+      backup: yes
+    when: X_Forwarded_For_in_AnyEvent.stdout == "false"
+    notify:
+    - Restart service pveproxy
+
+  - name: Veriy exist IPSet banned-fail2ban
+    shell: pvesh get /cluster/firewall/ipset/banned-fail2ban > /dev/null 2>&1 && echo true || echo false
+    register: exist_ipset
+    run_once: true
+
+  - name: Add ipset banned-fail2ban
+    shell: pvesh create /cluster/firewall/ipset --name banned-fail2ban
+    when: exist_ipset.stdout == "false"
+    run_once: true
+
+  handlers:
+
+  - name: Restart service pveproxy
+    ansible.builtin.service:
+      name: pveproxy
+      state: restarted
+
+  - name: Restart service postfix
+    ansible.builtin.service:
+      name: postfix
+      state: restarted
+
+  - name: Restart service fail2ban
+    service:
+      name: fail2ban
+      state: restarted

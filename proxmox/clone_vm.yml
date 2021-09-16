@@ -1,0 +1,44 @@
+- name: Clone VM from template
+  hosts: host1.ilba.cat
+
+  vars_prompt:
+
+    - name: vm_name
+      prompt: "Nombre del equipo"
+      default: "borrame.ilba.cat"
+      private: false
+    
+    - name: vm_memory
+      prompt: "Memoria equipo"
+      default: "2048"
+      private: false
+
+    - name: vm_sockets
+      prompt: "Sockets del equipo"
+      default: "1"
+      private: false
+
+    - name: vm_cores
+      prompt: "Cores del equipo"
+      default: "2"
+      private: false
+
+    - name: clone_id
+      prompt: "Equipo a clonar (123)"
+      confirm: yes
+      private: false
+
+  tasks:
+
+  - name: Get nextid
+    shell: pvesh get /cluster/nextid
+    register: nextid
+
+  - name: Clone VM
+    shell: qm clone {{ clone_id }} {{ nextid.stdout }} -name {{ vm_name }} -target host1 -full 1
+
+  - name: Set VM
+    shell: qm set {{ nextid.stdout }} --memory {{ vm_memory }} --sockets {{ vm_sockets }} --cores {{ vm_cores }}
+
+  - name: Start VM
+    shell: qm start {{ nextid.stdout }}
